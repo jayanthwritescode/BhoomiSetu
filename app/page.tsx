@@ -19,6 +19,11 @@ type LandRecord = FormData & { id: string; status: Status; updated: string; hash
 type Step = 'upload' | 'processing' | 'review' | 'approved' | 'proof';
 type OcrLanguage = 'eng' | 'eng+kan';
 type FieldConfidence = Record<keyof FormData, number>;
+type ChainStatus = 'idle' | 'pending' | 'confirmed' | 'failed';
+
+const AMOY_CHAIN_ID = '0x13882';
+const AMOY_RPC = 'https://polygon-amoy.drpc.org';
+const AMOY_EXPLORER = 'https://amoy.polygonscan.com';
 
 const seedRecords: LandRecord[] = [
   { id: 'LR-2026-0184', owner: 'Ananya Rao', survey: '48/2B', village: 'Devanahalli', area: '1.84', recordNo: 'RTC-1948-22', issueDate: '2022-06-14', status: 'Anchored', updated: '08 Sep, 18:42', hash: '4ee296866a75a25f92cf4a87b34b61d13b89f79d2f7bc59cf690aa7cfe4f314d', txHash: '0xc143b140fa1f68b5c603bbff2819e7db62e6df3bfeee131eb19010223f58a12e', proof: 'local' },
@@ -55,6 +60,7 @@ export default function Home() {
   const [anchoredHash, setAnchoredHash] = useState('');
   const [txHash, setTxHash] = useState('');
   const [proof, setProof] = useState<'polygon' | 'local'>('local');
+  const [chainStatus, setChainStatus] = useState<ChainStatus>('idle');
   const [verifyState, setVerifyState] = useState<'idle' | 'valid' | 'invalid'>('idle');
   const [anchorBusy, setAnchorBusy] = useState(false);
   const [notice, setNotice] = useState('');
@@ -83,7 +89,7 @@ export default function Home() {
   }, []);
 
   function resetFlow() {
-    setStep('upload'); setForm(blankForm); setFileName(''); setFileUrl(''); setOcrText(''); setProgress(0); setOcrConfidence(0); setFieldConfidence({ owner: 0, survey: 0, village: 0, area: 0, recordNo: 0, issueDate: 0 }); setOcrPass('Preparing image'); setCurrentId(''); setHash(''); setAnchoredHash(''); setTxHash(''); setVerifyState('idle'); setNotice('');
+    setStep('upload'); setForm(blankForm); setFileName(''); setFileUrl(''); setOcrText(''); setProgress(0); setOcrConfidence(0); setFieldConfidence({ owner: 0, survey: 0, village: 0, area: 0, recordNo: 0, issueDate: 0 }); setOcrPass('Preparing image'); setCurrentId(''); setHash(''); setAnchoredHash(''); setTxHash(''); setChainStatus('idle'); setVerifyState('idle'); setNotice('');
   }
 
   function openNew() { resetFlow(); setDialogOpen(true); }
@@ -135,31 +141,52 @@ export default function Home() {
 
   async function anchorOnPolygon() {
     setAnchorBusy(true); setNotice('Waiting for wallet confirmation…');
+    let submittedTransaction = '';
     try {
       if (!window.ethereum) throw new Error('NO_WALLET');
-      try { await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x13882' }] }); }
-      catch { await window.ethereum.request({ method: 'wallet_addEthereumChain', params: [{ chainId: '0x13882', chainName: 'Polygon Amoy', nativeCurrency: { name: 'POL', symbol: 'POL', decimals: 18 }, rpcUrls: ['https://polygon-amoy.drpc.org'], blockExplorerUrls: ['https://amoy.polygonscan.com'] }] }); }
+      try { await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: AMOY_CHAIN_ID }] }); }
+      catch { await window.ethereum.request({ method: 'wallet_addEthereumChain', params: [{ chainId: AMOY_CHAIN_ID, chainName: 'Polygon Amoy', nativeCurrency: { name: 'POL', symbol: 'POL', decimals: 18 }, rpcUrls: [AMOY_RPC], blockExplorerUrls: [AMOY_EXPLORER] }] }); }
       const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' }) as string[];
       const transaction = await window.ethereum.request({ method: 'eth_sendTransaction', params: [{ from: accounts[0], to: accounts[0], value: '0x0', data: `0x${hash}` }] }) as string;
-      setTxHash(transaction); setAnchoredHash(hash); setProof('polygon'); setStep('proof'); setRecords((old) => old.map((record) => record.id === currentId ? { ...record, status: 'Anchored', hash, txHash: transaction, proof: 'polygon' } : record)); setNotice('Fingerprint submitted to Polygon Amoy.');
+      submittedTransaction = transaction;
+      setTxHash(transaction); setAnchoredHash(hash); setProof('polygon'); setChainStatus('pending'); setNotice('Transaction submitted. Waiting for an Amoy block confirmation…');
+      const receipt = await waitForReceipt(transaction);
+      if (receipt.status !== '0x1') throw new Error('TRANSACTION_REVERTED');
+      setChainStatus('confirmed'); setStep('proof'); setRecords((old) => old.map((record) => record.id === currentId ? { ...record, status: 'Anchored', hash, txHash: transaction, proof: 'polygon' } : record)); setNotice(`Confirmed on Polygon Amoy in block ${Number.parseInt(receipt.blockNumber, 16).toLocaleString()}.`);
     } catch (error) {
-      setNotice(error instanceof Error && error.message === 'NO_WALLET' ? 'No browser wallet found. Use the offline proof for a reliable demo, or install MetaMask for live Amoy anchoring.' : 'Wallet transaction was cancelled or failed. No record data was sent.');
+      if (error instanceof Error && error.message === 'NO_WALLET') setNotice('No browser wallet found. Install MetaMask or use the clearly labeled offline proof.');
+      else if (submittedTransaction && (!(error instanceof Error) || error.message !== 'TRANSACTION_REVERTED')) { setChainStatus('pending'); setStep('proof'); setNotice('Transaction was submitted, but confirmation could not be established yet. Check the explorer before treating it as anchored.'); }
+      else { setChainStatus('failed'); setNotice('The wallet transaction was rejected or failed. The record remains validated and no anchor was recorded.'); }
     } finally { setAnchorBusy(false); }
   }
 
   function createOfflineProof() {
     const receipt = `LOCAL-${crypto.randomUUID().replaceAll('-', '').slice(0, 16).toUpperCase()}`;
-    setTxHash(receipt); setAnchoredHash(hash); setProof('local'); setStep('proof'); setRecords((old) => old.map((record) => record.id === currentId ? { ...record, status: 'Anchored', hash, txHash: receipt, proof: 'local' } : record)); setNotice('Offline proof created. This is a demo fallback—not a blockchain transaction.');
+    setTxHash(receipt); setAnchoredHash(hash); setProof('local'); setChainStatus('confirmed'); setStep('proof'); setRecords((old) => old.map((record) => record.id === currentId ? { ...record, status: 'Anchored', hash, txHash: receipt, proof: 'local' } : record)); setNotice('Offline proof created. This is a demo fallback—not a blockchain transaction.');
   }
 
   async function verifyIntegrity() {
     const currentHash = await hashRecord(form);
-    setHash(currentHash); setVerifyState(currentHash === anchoredHash ? 'valid' : 'invalid');
+    setHash(currentHash);
+    if (proof === 'polygon') {
+      setNotice('Reading the transaction back from Polygon Amoy…');
+      try {
+        const [transaction, receipt] = await Promise.all([readAmoyTransaction(txHash), amoyRpc<AmoyReceipt>('eth_getTransactionReceipt', [txHash])]);
+        if (!receipt) { setChainStatus('pending'); setVerifyState('idle'); setNotice('The transaction is visible but not confirmed yet. Retry shortly.'); return; }
+        if (receipt.status !== '0x1') { setChainStatus('failed'); setVerifyState('invalid'); setNotice('The blockchain transaction failed and cannot anchor this record.'); return; }
+        setChainStatus('confirmed');
+        const chainHashMatches = transaction?.input?.toLowerCase() === `0x${anchoredHash}`.toLowerCase();
+        setVerifyState(currentHash === anchoredHash && chainHashMatches ? 'valid' : 'invalid');
+        setNotice(chainHashMatches ? `On-chain input independently matches the approved fingerprint in block ${Number.parseInt(receipt.blockNumber, 16).toLocaleString()}.` : 'The Amoy transaction input does not match this record fingerprint.');
+      } catch { setVerifyState('idle'); setNotice('Amoy could not be reached. No verification result was claimed; retry when the network is available.'); }
+      return;
+    }
+    setVerifyState(currentHash === anchoredHash ? 'valid' : 'invalid'); setNotice('Compared with the stored offline demo proof. No blockchain lookup was performed.');
   }
 
   async function openRecord(record: LandRecord) {
     setForm({ owner: record.owner, survey: record.survey, village: record.village, area: record.area, recordNo: record.recordNo, issueDate: record.issueDate });
-    setCurrentId(record.id); setFileName(`${record.recordNo.toLowerCase()}.jpg`); setHash(record.hash || await hashRecord(record)); setAnchoredHash(record.hash || ''); setTxHash(record.txHash || ''); setProof(record.proof || 'local'); setVerifyState('idle'); setNotice(''); setStep(record.status === 'Anchored' ? 'proof' : record.status === 'Validated' ? 'approved' : 'review'); setDialogOpen(true);
+    setCurrentId(record.id); setFileName(`${record.recordNo.toLowerCase()}.jpg`); setHash(record.hash || await hashRecord(record)); setAnchoredHash(record.hash || ''); setTxHash(record.txHash || ''); setProof(record.proof || 'local'); setChainStatus(record.status === 'Anchored' ? 'confirmed' : 'idle'); setVerifyState('idle'); setNotice(''); setStep(record.status === 'Anchored' ? 'proof' : record.status === 'Validated' ? 'approved' : 'review'); setDialogOpen(true);
   }
 
   return (
@@ -195,7 +222,7 @@ export default function Home() {
             {step === 'processing' && <ProcessingStage progress={progress} fileName={fileName} pass={ocrPass} />}
             {step === 'review' && <ReviewStage form={form} setForm={setForm} fileName={fileName} fileUrl={fileUrl} ocrText={ocrText} ocrConfidence={ocrConfidence} fieldConfidence={fieldConfidence} conflicts={conflicts} requiredComplete={requiredComplete} notice={notice} onApprove={() => void approveRecord()} onReset={resetFlow} />}
             {step === 'approved' && <ApprovedStage hash={hash} form={form} notice={notice} busy={anchorBusy} onAnchor={() => void anchorOnPolygon()} onOffline={createOfflineProof} />}
-            {step === 'proof' && <ProofStage form={form} setForm={setForm} hash={hash} txHash={txHash} proof={proof} verifyState={verifyState} notice={notice} onVerify={() => void verifyIntegrity()} onDone={() => setDialogOpen(false)} />}
+            {step === 'proof' && <ProofStage form={form} setForm={setForm} hash={hash} txHash={txHash} proof={proof} chainStatus={chainStatus} verifyState={verifyState} notice={notice} onVerify={() => void verifyIntegrity()} onDone={() => setDialogOpen(false)} />}
           </div>
         </dialog>
       </div>}
@@ -226,8 +253,8 @@ function ApprovedStage({ hash, form, notice, busy, onAnchor, onOffline }: { hash
   return <div className="mx-auto max-w-3xl py-8"><div className="text-center"><div className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-teal-50 text-teal-700"><ShieldCheck className="h-8 w-8" /></div><h3 className="mt-5 text-2xl font-bold">Record validated</h3><p className="mt-2 text-sm text-slate-500">The approved snapshot is locked into a deterministic SHA-256 fingerprint.</p></div><div className="mt-7 rounded-2xl border border-slate-200 bg-[#071b2b] p-5 text-white"><div className="flex items-center justify-between"><p className="text-xs font-semibold uppercase tracking-widest text-teal-300">Record fingerprint</p><Fingerprint className="h-5 w-5 text-teal-300" /></div><p className="mt-3 break-all font-mono text-sm leading-6 text-slate-200">{hash}</p><div className="mt-4 grid grid-cols-3 gap-3 border-t border-white/10 pt-4 text-xs"><div><span className="text-slate-400">Owner</span><p className="mt-1 font-semibold">{form.owner}</p></div><div><span className="text-slate-400">Parcel</span><p className="mt-1 font-semibold">{form.survey}</p></div><div><span className="text-slate-400">Area</span><p className="mt-1 font-semibold">{form.area} ac</p></div></div></div>{notice && <p className="mt-4 text-center text-sm text-amber-700">{notice}</p>}<div className="mt-6 grid gap-3 sm:grid-cols-2"><Button onClick={onAnchor} disabled={busy} className="h-auto min-h-16 justify-start rounded-xl bg-[#0b766d] px-4 py-3 text-left text-white hover:bg-[#09665f]">{busy ? <LoaderCircle className="mr-3 h-5 w-5 animate-spin" /> : <Wallet className="mr-3 h-5 w-5" />}<span><span className="block font-semibold">Anchor on Polygon Amoy</span><span className="block text-xs font-normal text-teal-100">Requires MetaMask and test POL</span></span></Button><Button onClick={onOffline} variant="outline" className="h-auto min-h-16 justify-start rounded-xl px-4 py-3 text-left"><Blocks className="mr-3 h-5 w-5 text-slate-600" /><span><span className="block font-semibold">Create offline demo proof</span><span className="block text-xs font-normal text-slate-500">Reliable fallback · clearly labeled</span></span></Button></div><p className="mt-5 text-center text-xs text-slate-500">Only the fingerprint is sent to the blockchain. Names, parcel details, and documents remain off-chain.</p></div>;
 }
 
-function ProofStage({ form, setForm, hash, txHash, proof, verifyState, notice, onVerify, onDone }: { form: FormData; setForm: React.Dispatch<React.SetStateAction<FormData>>; hash: string; txHash: string; proof: 'polygon' | 'local'; verifyState: 'idle' | 'valid' | 'invalid'; notice: string; onVerify: () => void; onDone: () => void }) {
-  return <div className="mx-auto max-w-3xl py-6"><div className={`rounded-2xl border p-6 ${verifyState === 'invalid' ? 'border-red-200 bg-red-50' : 'border-teal-200 bg-teal-50'}`}><div className="flex items-start gap-4"><div className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl ${verifyState === 'invalid' ? 'bg-red-100 text-red-700' : 'bg-teal-100 text-teal-700'}`}>{verifyState === 'invalid' ? <XCircle className="h-6 w-6" /> : <CheckCircle2 className="h-6 w-6" />}</div><div><Badge className={proof === 'polygon' ? 'bg-violet-100 text-violet-800' : 'bg-slate-200 text-slate-700'}>{proof === 'polygon' ? 'Polygon Amoy testnet' : 'Offline demo proof'}</Badge><h3 className={`mt-2 text-xl font-bold ${verifyState === 'invalid' ? 'text-red-950' : 'text-teal-950'}`}>{verifyState === 'invalid' ? 'Record changed after anchoring' : verifyState === 'valid' ? 'Integrity verified' : 'Fingerprint anchored'}</h3><p className={`mt-1 text-sm ${verifyState === 'invalid' ? 'text-red-800' : 'text-teal-800'}`}>{verifyState === 'invalid' ? 'The current record no longer matches the approved snapshot. Investigate before use.' : 'Recompute the fingerprint at any time to detect later changes.'}</p></div></div></div><div className="mt-5 grid gap-4 rounded-2xl border border-slate-200 bg-white p-5 sm:grid-cols-[1fr_auto]"><div><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Proof reference</p><p className="mt-2 break-all font-mono text-xs text-slate-700">{txHash}</p><p className="mt-4 text-xs font-semibold uppercase tracking-wide text-slate-500">Current fingerprint</p><p className="mt-2 break-all font-mono text-xs text-slate-700">{hash}</p></div>{proof === 'polygon' && <a href={`https://amoy.polygonscan.com/tx/${txHash}`} target="_blank" rel="noreferrer" className="inline-flex h-10 items-center justify-center rounded-lg border border-slate-200 px-3 text-sm font-semibold text-teal-800 hover:bg-teal-50">Explorer <ExternalLink className="ml-2 h-4 w-4" /></a>}</div><div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-5"><div className="flex items-center justify-between"><div><h4 className="font-semibold">Tamper test</h4><p className="mt-1 text-xs text-slate-500">Change one character, then verify against the anchored fingerprint.</p></div><Fingerprint className="h-5 w-5 text-slate-400" /></div><div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]"><div><Label htmlFor="proof-owner" className="mb-2 block text-xs">Owner name</Label><Input id="proof-owner" value={form.owner} onChange={(e) => { setForm((old) => ({ ...old, owner: e.target.value })); }} className="bg-white" /></div><Button onClick={onVerify} className="self-end bg-slate-900 text-white hover:bg-slate-800"><ShieldCheck className="mr-2 h-4 w-4" />Verify integrity</Button></div></div>{notice && <p className="mt-4 text-center text-xs text-slate-500">{notice}</p>}<div className="mt-6 flex justify-end"><Button onClick={onDone} variant="outline">Done</Button></div></div>;
+function ProofStage({ form, setForm, hash, txHash, proof, chainStatus, verifyState, notice, onVerify, onDone }: { form: FormData; setForm: React.Dispatch<React.SetStateAction<FormData>>; hash: string; txHash: string; proof: 'polygon' | 'local'; chainStatus: ChainStatus; verifyState: 'idle' | 'valid' | 'invalid'; notice: string; onVerify: () => void; onDone: () => void }) {
+  return <div className="mx-auto max-w-3xl py-6"><div className={`rounded-2xl border p-6 ${verifyState === 'invalid' || chainStatus === 'failed' ? 'border-red-200 bg-red-50' : chainStatus === 'pending' ? 'border-amber-200 bg-amber-50' : 'border-teal-200 bg-teal-50'}`}><div className="flex items-start gap-4"><div className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl ${verifyState === 'invalid' || chainStatus === 'failed' ? 'bg-red-100 text-red-700' : chainStatus === 'pending' ? 'bg-amber-100 text-amber-700' : 'bg-teal-100 text-teal-700'}`}>{verifyState === 'invalid' || chainStatus === 'failed' ? <XCircle className="h-6 w-6" /> : chainStatus === 'pending' ? <LoaderCircle className="h-6 w-6 animate-spin" /> : <CheckCircle2 className="h-6 w-6" />}</div><div><div className="flex flex-wrap gap-2"><Badge className={proof === 'polygon' ? 'bg-violet-100 text-violet-800' : 'bg-slate-200 text-slate-700'}>{proof === 'polygon' ? 'Polygon Amoy · Chain 80002' : 'Offline demo proof'}</Badge><Badge className={chainStatus === 'confirmed' ? 'bg-teal-100 text-teal-800' : chainStatus === 'pending' ? 'bg-amber-100 text-amber-800' : 'bg-red-100 text-red-800'}>{chainStatus === 'confirmed' ? 'Confirmed' : chainStatus === 'pending' ? 'Pending' : 'Failed'}</Badge></div><h3 className={`mt-2 text-xl font-bold ${verifyState === 'invalid' ? 'text-red-950' : chainStatus === 'pending' ? 'text-amber-950' : 'text-teal-950'}`}>{verifyState === 'invalid' ? 'Record changed after anchoring' : verifyState === 'valid' ? 'On-chain integrity verified' : chainStatus === 'pending' ? 'Waiting for confirmation' : 'Fingerprint anchored'}</h3><p className={`mt-1 text-sm ${verifyState === 'invalid' ? 'text-red-800' : chainStatus === 'pending' ? 'text-amber-800' : 'text-teal-800'}`}>{verifyState === 'invalid' ? 'The record or on-chain fingerprint does not match the approved snapshot.' : proof === 'polygon' ? 'Verification reads the transaction input back from Polygon Amoy.' : 'This fallback verifies local integrity only and is not a blockchain transaction.'}</p></div></div></div><div className="mt-5 grid gap-4 rounded-2xl border border-slate-200 bg-white p-5 sm:grid-cols-[1fr_auto]"><div><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Transaction / proof reference</p><p className="mt-2 break-all font-mono text-xs text-slate-700">{txHash}</p><p className="mt-4 text-xs font-semibold uppercase tracking-wide text-slate-500">Current fingerprint</p><p className="mt-2 break-all font-mono text-xs text-slate-700">{hash}</p></div>{proof === 'polygon' && <a href={`${AMOY_EXPLORER}/tx/${txHash}`} target="_blank" rel="noreferrer" className="inline-flex h-10 items-center justify-center rounded-lg border border-slate-200 px-3 text-sm font-semibold text-teal-800 hover:bg-teal-50">Explorer <ExternalLink className="ml-2 h-4 w-4" /></a>}</div><div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-5"><div className="flex items-center justify-between"><div><h4 className="font-semibold">Independent verification</h4><p className="mt-1 text-xs text-slate-500">Change one character, then recompute and compare with the transaction input.</p></div><Fingerprint className="h-5 w-5 text-slate-400" /></div><div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]"><div><Label htmlFor="proof-owner" className="mb-2 block text-xs">Owner name</Label><Input id="proof-owner" value={form.owner} onChange={(e) => { setForm((old) => ({ ...old, owner: e.target.value })); }} className="bg-white" /></div><Button onClick={onVerify} disabled={chainStatus === 'pending'} className="self-end bg-slate-900 text-white hover:bg-slate-800"><ShieldCheck className="mr-2 h-4 w-4" />Verify integrity</Button></div></div>{notice && <p className="mt-4 text-center text-xs text-slate-500">{notice}</p>}<div className="mt-6 flex justify-end"><Button onClick={onDone} variant="outline">Done</Button></div></div>;
 }
 
 function Field({ label, name, value, confidence, setForm, type = 'text' }: { label: string; name: keyof FormData; value: string; confidence: number; setForm: React.Dispatch<React.SetStateAction<FormData>>; type?: string }) { return <div><div className="mb-2 flex items-center justify-between"><Label htmlFor={name} className="text-xs font-semibold text-slate-600">{label}</Label><ConfidenceBadge value={confidence} /></div><Input id={name} type={type} value={value} min={type === 'number' ? '0' : undefined} step={type === 'number' ? '.01' : undefined} onChange={(e) => setForm((old) => ({ ...old, [name]: e.target.value }))} className={`h-10 bg-white ${!value || confidence < 60 ? 'border-amber-300 focus-visible:border-amber-500 focus-visible:ring-amber-200' : ''}`} /></div>; }
@@ -238,6 +265,30 @@ function StatusBadge({ status }: { status: Status }) { const classes = { Anchore
 function NavItem({ icon: Icon, label, active, count, onClick }: { icon: typeof LayoutDashboard; label: string; active?: boolean; count?: string; onClick?: () => void }) { return <button onClick={onClick} className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium transition ${active ? 'bg-teal-50 text-teal-800' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><Icon className="h-4 w-4" /><span>{label}</span>{count && <span className="ml-auto rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-800">{count}</span>}</button>; }
 function Metric({ icon: Icon, label, value, detail, tone = 'navy' }: { icon: typeof FileSearch; label: string; value: string; detail: string; tone?: 'navy' | 'teal' | 'amber' }) { const colors = { navy: 'bg-slate-100 text-slate-700', teal: 'bg-teal-50 text-teal-700', amber: 'bg-amber-50 text-amber-700' }; return <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_4px_18px_rgba(15,23,42,.03)]"><div className="flex items-center justify-between"><div><p className="text-sm font-medium text-slate-500">{label}</p><p className="mt-1 text-2xl font-bold tracking-tight">{value}</p></div><div className={`grid h-10 w-10 place-items-center rounded-xl ${colors[tone]}`}><Icon className="h-5 w-5" /></div></div><p className="mt-3 text-xs text-slate-500">{detail}</p></div>; }
 function stepLabel(step: Step) { return step === 'upload' ? 'Upload a clean, typed record or use the built-in sample.' : step === 'processing' ? 'Extracting text with browser-based OCR.' : step === 'review' ? 'Compare the source and confirm every field.' : step === 'approved' ? 'Validation passed. Anchor the approved fingerprint.' : 'Recompute the fingerprint to confirm integrity.'; }
+
+type AmoyReceipt = { status: string; blockNumber: string };
+type AmoyTransaction = { input?: string };
+
+async function amoyRpc<T>(method: string, params: unknown[]): Promise<T | null> {
+  const response = await fetch(AMOY_RPC, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+  if (!response.ok) throw new Error('RPC_UNAVAILABLE');
+  const payload = await response.json() as { result?: T | null; error?: { message?: string } };
+  if (payload.error) throw new Error(payload.error.message || 'RPC_ERROR');
+  return payload.result ?? null;
+}
+
+async function waitForReceipt(transactionHash: string): Promise<AmoyReceipt> {
+  for (let attempt = 0; attempt < 24; attempt++) {
+    const receipt = await amoyRpc<AmoyReceipt>('eth_getTransactionReceipt', [transactionHash]);
+    if (receipt) return receipt;
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  throw new Error('CONFIRMATION_TIMEOUT');
+}
+
+async function readAmoyTransaction(transactionHash: string): Promise<AmoyTransaction | null> {
+  return amoyRpc<AmoyTransaction>('eth_getTransactionByHash', [transactionHash]);
+}
 
 function parseOcr(text: string): FormData {
   const sourceLines = text.split(/\r?\n/).map((value) => value.replace(/\s+/g, ' ').trim()).filter(Boolean);
