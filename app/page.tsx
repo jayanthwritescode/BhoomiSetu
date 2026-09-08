@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
+import { canManage, type Profile } from '@/lib/access';
+import { OwnershipPanel, AccessGuide } from '@/components/ownership-panel';
 import {
   amoyRpc,
   waitForReceipt,
@@ -19,6 +21,9 @@ import { recognizeScan } from '@/lib/ocr';
 import {
   AlertTriangle,
   Blocks,
+  Download,
+  CircleHelp,
+  UserRound,
   Check,
   CheckCircle2,
   ChevronRight,
@@ -65,7 +70,13 @@ type LandRecord = FormData & {
   signer?: string;
   chainStatus?: ChainStatus;
 };
-type Step = 'upload' | 'processing' | 'review' | 'approved' | 'proof';
+type Step =
+  | 'details'
+  | 'upload'
+  | 'processing'
+  | 'review'
+  | 'approved'
+  | 'proof';
 type OcrLanguage = 'eng' | 'eng+kan';
 type FieldConfidence = Record<keyof FormData, number>;
 type ChainStatus = 'idle' | 'pending' | 'confirmed' | 'failed';
@@ -159,6 +170,10 @@ declare global {
 
 export default function Home() {
   const [records, setRecords] = useState(seedRecords);
+  const [profile, setProfile] = useState<Profile>('official');
+  const [workspace, setWorkspace] = useState<
+    'registry' | 'review' | 'proofs' | 'help'
+  >('registry');
   const [query, setQuery] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [step, setStep] = useState<Step>('upload');
@@ -245,6 +260,7 @@ export default function Home() {
     setDialogOpen(false);
   }
   function exportRecords() {
+    if (!canManage(profile)) return;
     const url = URL.createObjectURL(
       new Blob(
         [
@@ -272,18 +288,21 @@ export default function Home() {
 
   const filtered = useMemo(
     () =>
-      records.filter((record) =>
-        [
-          record.id,
-          record.owner,
-          record.survey,
-          record.village,
-          record.recordNo,
-        ].some((value) =>
-          value.toLowerCase().includes(query.trim().toLowerCase()),
-        ),
+      records.filter(
+        (record) =>
+          (workspace !== 'review' || record.status === 'Needs review') &&
+          (workspace !== 'proofs' || Boolean(record.txHash)) &&
+          [
+            record.id,
+            record.owner,
+            record.survey,
+            record.village,
+            record.recordNo,
+          ].some((value) =>
+            value.toLowerCase().includes(query.trim().toLowerCase()),
+          ),
       ),
-    [query, records],
+    [query, records, workspace],
   );
 
   const conflicts = useMemo(
@@ -330,7 +349,7 @@ export default function Home() {
   }, []);
 
   function openNew() {
-    if (busyRef.current) return;
+    if (busyRef.current || !canManage(profile)) return;
     resetFlow();
     setDialogOpen(true);
   }
@@ -368,6 +387,8 @@ export default function Home() {
           },
           annotations: { readOnlyHint: false, untrustedContentHint: false },
           execute: async () => {
+            if (!canManage(profile))
+              return { status: 'not_available_for_profile' };
             if (busyRef.current) return { status: 'busy' };
             resetFlow();
             loadSample();
@@ -382,9 +403,10 @@ export default function Home() {
       ),
     ).catch(() => undefined);
     return () => lifecycle.abort();
-  }, [resetFlow, loadSample]);
+  }, [resetFlow, loadSample, profile]);
 
   async function runOcr(file: File) {
+    if (!canManage(profile)) return;
     if (
       !['image/png', 'image/jpeg'].includes(file.type) ||
       file.size > 12 * 1024 * 1024
@@ -478,7 +500,13 @@ export default function Home() {
   }
 
   async function approveRecord() {
-    if (!requiredComplete || conflicts.length || !beginOperation()) return;
+    if (
+      !canManage(profile) ||
+      !requiredComplete ||
+      conflicts.length ||
+      !beginOperation()
+    )
+      return;
     try {
       const newHash = await hashRecord(form);
       const id =
@@ -507,7 +535,7 @@ export default function Home() {
   }
 
   async function anchorOnPolygon() {
-    if (!beginOperation()) return;
+    if (!canManage(profile) || !beginOperation()) return;
     setNotice('Waiting for wallet confirmation…');
     let submittedTransaction = '';
     try {
@@ -634,7 +662,7 @@ export default function Home() {
   }
 
   async function createWalletAttestation() {
-    if (!beginOperation()) return;
+    if (!canManage(profile) || !beginOperation()) return;
     setNotice('Waiting for your wallet signature…');
     try {
       if (!window.ethereum) throw new Error('NO_WALLET');
@@ -689,7 +717,7 @@ export default function Home() {
   }
 
   async function verifyIntegrity() {
-    if (!beginOperation()) return;
+    if (!canManage(profile) || !beginOperation()) return;
     setVerifyState('idle');
     try {
       const currentHash = await hashRecord(form);
@@ -813,16 +841,13 @@ export default function Home() {
   }
 
   async function openRecord(record?: LandRecord) {
-    if (busyRef.current) return;
+    if (busyRef.current || !canManage(profile)) return;
     if (!record) {
       setNotice('No matching records are available yet.');
       return;
     }
     resetFlow();
     const version = flowVersion.current;
-    const recordHash =
-      record.hash || (await hashRecord(record).catch(() => ''));
-    if (version !== flowVersion.current) return;
     setForm({
       owner: record.owner,
       survey: record.survey,
@@ -832,8 +857,8 @@ export default function Home() {
       issueDate: record.issueDate,
     });
     setCurrentId(record.id);
-    setFileName('Source image not retained in this prototype');
-    setHash(recordHash);
+    setFileName('Source image is not retained');
+    setHash(record.hash || '');
     setAnchoredHash(record.hash || '');
     setTxHash(record.txHash || '');
     setProof(record.proof || 'local');
@@ -844,233 +869,329 @@ export default function Home() {
           ? 'confirmed'
           : 'idle'),
     );
-    setVerifyState('idle');
-    setNotice('');
-    setStep(
-      record.txHash ||
-        record.status === 'Anchored' ||
-        record.status === 'Attested'
-        ? 'proof'
-        : record.status === 'Validated'
-          ? 'approved'
-          : 'review',
-    );
+    setStep('details');
     setDialogOpen(true);
+    const recordHash =
+      record.hash || (await hashRecord(record).catch(() => ''));
+    if (version === flowVersion.current) setHash(recordHash);
   }
+
+  function changeProfile(next: Profile) {
+    if (busyRef.current) return;
+    closeDialog();
+    resetFlow();
+    setQuery('');
+    setWorkspace('registry');
+    setProfile(next);
+  }
+  function navigate(next: typeof workspace) {
+    if (busyRef.current) return;
+    closeDialog();
+    setQuery('');
+    setNotice('');
+    setWorkspace(next);
+  }
+  const selectedRecord = records.find((record) => record.id === currentId);
 
   return (
     <main className="min-h-screen bg-[#f3f6f8] text-slate-950">
       <header className="sticky top-0 z-30 flex h-16 items-center border-b border-white/10 bg-[#071b2b] px-4 text-white shadow-sm md:px-7">
         <div className="flex items-center gap-3">
-          <div className="grid h-9 w-9 place-items-center rounded-xl bg-teal-400 text-[#071b2b] shadow-[0_0_22px_rgba(45,212,191,.24)]">
+          <div className="hidden h-9 w-9 place-items-center rounded-xl bg-teal-400 text-[#071b2b] shadow-[0_0_22px_rgba(45,212,191,.24)] sm:grid">
             <MapPinned className="h-5 w-5" />
           </div>
           <div>
             <p className="text-base font-bold tracking-tight">BhoomiSetu</p>
-            <p className="text-xs text-slate-400">Land Records Intelligence</p>
+            <p className="hidden text-xs text-slate-400 sm:block">
+              Land Records Intelligence
+            </p>
           </div>
         </div>
         <div className="ml-auto flex items-center gap-3">
-          <div className="hidden items-center gap-2 rounded-full border border-teal-400/20 bg-teal-400/10 px-3 py-1.5 text-xs font-medium text-teal-200 sm:flex">
-            <span className="h-2 w-2 rounded-full bg-teal-400" />
-            Prototype · session only
+          <div className="hidden h-10 w-10 items-center justify-center rounded-full bg-teal-400/15 text-teal-200 sm:flex">
+            <UserRound className="h-5 w-5" />
           </div>
-          <div className="grid h-9 w-9 place-items-center rounded-full bg-white/10 text-sm font-semibold">
-            AR
+          <div>
+            <Label
+              htmlFor="profile-selector"
+              className="mb-1 block text-xs text-slate-400"
+            >
+              Demo profile
+            </Label>
+            <select
+              id="profile-selector"
+              value={profile}
+              disabled={anchorBusy}
+              onChange={(event) => changeProfile(event.target.value as Profile)}
+              className="max-w-[155px] rounded-lg border border-white/20 bg-[#102c3f] px-2 py-1 text-sm text-white focus:outline-2 focus:outline-teal-300 sm:max-w-48"
+            >
+              <option value="official">Government official</option>
+              <option value="public">Normal user</option>
+              <option value="broker">Broker</option>
+            </select>
           </div>
         </div>
       </header>
 
-      <div className="flex min-h-[calc(100vh-4rem)]">
-        <aside className="hidden w-60 shrink-0 border-r border-slate-200 bg-white p-4 lg:block">
-          <nav className="space-y-1">
-            <NavItem icon={LayoutDashboard} label="Record registry" active />
-            <NavItem icon={Upload} label="Digitize record" onClick={openNew} />
+      <div className="flex min-h-[calc(100vh-4rem)] flex-col lg:flex-row">
+        <aside className="w-full shrink-0 border-b border-slate-200 bg-white p-3 lg:w-60 lg:border-b-0 lg:border-r lg:p-4">
+          <nav
+            aria-label="Workspace navigation"
+            className="flex gap-1 overflow-x-auto lg:block lg:space-y-1"
+          >
+            {canManage(profile) ? (
+              <>
+                <NavItem
+                  icon={LayoutDashboard}
+                  label="All records"
+                  active={workspace === 'registry'}
+                  onClick={() => navigate('registry')}
+                />
+                <NavItem
+                  icon={FileCheck2}
+                  label="Review queue"
+                  count={String(
+                    records.filter((record) => record.status === 'Needs review')
+                      .length,
+                  )}
+                  active={workspace === 'review'}
+                  onClick={() => navigate('review')}
+                />
+                <NavItem
+                  icon={Fingerprint}
+                  label="Proof tracker"
+                  active={workspace === 'proofs'}
+                  onClick={() => navigate('proofs')}
+                />
+                <NavItem
+                  icon={Upload}
+                  label="Digitize record"
+                  onClick={openNew}
+                />
+                <NavItem
+                  icon={Download}
+                  label="Export records"
+                  onClick={exportRecords}
+                />
+              </>
+            ) : (
+              <NavItem
+                icon={profile === 'broker' ? Search : ShieldCheck}
+                label={
+                  profile === 'broker' ? 'Parcel lookup' : 'Ownership check'
+                }
+                active={workspace !== 'help'}
+                onClick={() => navigate('registry')}
+              />
+            )}
             <NavItem
-              icon={FileCheck2}
-              label="Review queue"
-              count={String(
-                records.filter((r) => r.status === 'Needs review').length,
-              )}
-              onClick={() =>
-                void openRecord(
-                  records.find((r) => r.status === 'Needs review')!,
-                )
-              }
-            />
-            <NavItem
-              icon={Fingerprint}
-              label="Verify integrity"
-              onClick={() =>
-                void openRecord(
-                  records.find((r) => r.status === 'Attested') ||
-                    records.find((r) => r.proof === 'polygon'),
-                )
-              }
+              icon={CircleHelp}
+              label="Help & access"
+              active={workspace === 'help'}
+              onClick={() => navigate('help')}
             />
           </nav>
-          <div className="mt-8 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-xl bg-white text-teal-700 shadow-sm">
-              <Blocks className="h-4 w-4" />
-            </div>
-            <p className="text-sm font-semibold">Tamper-evident proofs</p>
-            <p className="mt-1 text-xs leading-5 text-slate-500">
-              A wallet signs only the SHA-256 fingerprint. Personal record data
-              remains private and off-chain.
+          <div className="mt-8 hidden rounded-2xl border border-slate-200 bg-slate-50 p-4 lg:block">
+            <ShieldCheck className="mb-3 h-5 w-5 text-teal-700" />
+            <p className="text-sm font-semibold">
+              {profile === 'official'
+                ? 'Registry administration'
+                : profile === 'broker'
+                  ? 'Read-only parcel lookup'
+                  : 'Exact-match verification'}
+            </p>
+            <p className="mt-2 text-sm leading-6 text-slate-500">
+              {profile === 'official'
+                ? 'Review records and track signatures or blockchain confirmations in one place.'
+                : profile === 'broker'
+                  ? 'Find recorded owners by parcel. Editing and registry export are not available in this view.'
+                  : 'Verify the details you already have without browsing other records.'}
             </p>
           </div>
         </aside>
 
         <section className="min-w-0 flex-1 px-4 py-6 md:px-7 md:py-8">
           <div className="mx-auto max-w-[1280px]">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-              <div>
-                <p className="mb-1 text-sm font-semibold text-teal-700">
-                  Karnataka · Bengaluru Rural
-                </p>
-                <h1 className="text-2xl font-bold tracking-tight md:text-3xl">
-                  Land record registry
-                </h1>
-                <p className="mt-1 text-sm text-slate-500">
-                  Digitize, validate, and verify every approved record.
-                </p>
-              </div>
-              <Button
-                onClick={openNew}
-                className="h-11 rounded-xl bg-[#0b766d] px-5 text-white shadow-sm hover:bg-[#09665f]"
-              >
-                <Plus className="mr-2 h-4 w-4" /> Digitize new record
-              </Button>
-            </div>
-            <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
-              <p>
-                Demo registry: MongoDB is not connected. New records and proofs
-                are lost on refresh. Use synthetic data only; exported files
-                contain personal fields.
-              </p>
-              <Button
-                onClick={exportRecords}
-                variant="outline"
-                className="mt-3"
-              >
-                Download session records and proofs
-              </Button>
-              {!dialogOpen && notice && (
-                <p className="mt-2" aria-live="polite">
-                  {notice}
-                </p>
-              )}
-            </div>
-            <div className="mt-7 grid gap-3 sm:grid-cols-3">
-              <Metric
-                icon={FileSearch}
-                label="Total records"
-                value={String(records.length).padStart(3, '0')}
-                detail="Includes four synthetic seed records"
+            {workspace === 'help' ? (
+              <AccessGuide />
+            ) : !canManage(profile) ? (
+              <OwnershipPanel
+                key={profile}
+                profile={profile}
+                records={records}
               />
-              <Metric
-                icon={ShieldCheck}
-                label="Validated"
-                value={String(
-                  records.filter((r) => r.status !== 'Needs review').length,
-                ).padStart(3, '0')}
-                detail="Registry quality checks passed"
-                tone="teal"
-              />
-              <Metric
-                icon={FileCheck2}
-                label="Needs review"
-                value={String(
-                  records.filter((r) => r.status === 'Needs review').length,
-                ).padStart(2, '0')}
-                detail="Requires human investigation"
-                tone="amber"
-              />
-            </div>
-            <div className="mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_8px_30px_rgba(15,23,42,.04)]">
-              <div className="flex flex-col gap-3 border-b border-slate-200 p-4 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h2 className="font-semibold">Recent records</h2>
-                  <p className="text-xs text-slate-500">
-                    Search by owner, survey number, village, or record ID
-                  </p>
+            ) : (
+              <>
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+                  <div>
+                    <p className="mb-1 text-sm font-semibold text-teal-700">
+                      Government workspace
+                    </p>
+                    <h1 className="text-2xl font-bold tracking-tight md:text-3xl">
+                      {workspace === 'review'
+                        ? 'Records awaiting review'
+                        : workspace === 'proofs'
+                          ? 'Record proof tracker'
+                          : 'Land record registry'}
+                    </h1>
+                    <p className="mt-1 text-sm text-slate-500">
+                      Digitize, validate, and verify every approved record.
+                    </p>
+                  </div>
+                  <Button
+                    onClick={openNew}
+                    className="h-11 rounded-xl bg-[#0b766d] px-5 text-white shadow-sm hover:bg-[#09665f]"
+                  >
+                    <Plus className="mr-2 h-4 w-4" /> Digitize new record
+                  </Button>
                 </div>
-                <div className="relative w-full sm:w-80">
-                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                  <Input
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                    placeholder="Search the registry…"
-                    className="h-10 rounded-xl border-slate-200 bg-slate-50 pl-9"
+                {!dialogOpen && notice && (
+                  <p className="mt-4 text-sm text-slate-600" aria-live="polite">
+                    {notice}
+                  </p>
+                )}
+                <div className="mt-7 grid gap-3 sm:grid-cols-3">
+                  <Metric
+                    icon={FileSearch}
+                    label="Total records"
+                    value={String(records.length).padStart(3, '0')}
+                    detail="Records available in this session"
+                  />
+                  <Metric
+                    icon={ShieldCheck}
+                    label="Validated"
+                    value={String(
+                      records.filter((r) => r.status !== 'Needs review').length,
+                    ).padStart(3, '0')}
+                    detail="Registry quality checks passed"
+                    tone="teal"
+                  />
+                  <Metric
+                    icon={FileCheck2}
+                    label="Needs review"
+                    value={String(
+                      records.filter((r) => r.status === 'Needs review').length,
+                    ).padStart(2, '0')}
+                    detail="Requires human investigation"
+                    tone="amber"
                   />
                 </div>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[800px] text-left text-sm">
-                  <thead className="bg-slate-50/80 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    <tr>
-                      <th className="px-5 py-3">Record</th>
-                      <th className="px-5 py-3">Owner</th>
-                      <th className="px-5 py-3">Parcel</th>
-                      <th className="px-5 py-3">Area</th>
-                      <th className="px-5 py-3">Status</th>
-                      <th className="px-5 py-3">Updated</th>
-                      <th className="px-5 py-3">
-                        <span className="sr-only">Open</span>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {filtered.map((record) => (
-                      <tr
-                        key={record.id}
-                        className="group cursor-pointer transition-colors hover:bg-slate-50"
-                      >
-                        <td className="px-5 py-4 font-mono text-xs font-semibold text-slate-700">
-                          <button
-                            onClick={() => void openRecord(record)}
-                            className="rounded text-left underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-teal-600"
-                          >
-                            {record.id}
-                          </button>
-                        </td>
-                        <td className="px-5 py-4 font-semibold">
-                          {record.owner}
-                        </td>
-                        <td className="px-5 py-4">
-                          <span className="font-medium">{record.survey}</span>
-                          <span className="block text-xs text-slate-500">
-                            {record.village}
-                          </span>
-                        </td>
-                        <td className="px-5 py-4 text-slate-600">
-                          {record.area} ac
-                        </td>
-                        <td className="px-5 py-4">
-                          <StatusBadge status={record.status} />
-                        </td>
-                        <td className="px-5 py-4 text-xs text-slate-500">
-                          {record.updated}
-                        </td>
-                        <td className="px-5 py-4">
-                          <ChevronRight className="h-4 w-4 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-teal-700" />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {filtered.length === 0 && (
-                  <div className="px-5 py-12 text-center text-sm text-slate-500">
-                    No records match “{query}”.
+                <div className="mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_8px_30px_rgba(15,23,42,.04)]">
+                  <div className="flex flex-col gap-3 border-b border-slate-200 p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h2 className="font-semibold">
+                        {workspace === 'review'
+                          ? 'Review queue'
+                          : workspace === 'proofs'
+                            ? 'Signatures & blockchain transactions'
+                            : 'Recent records'}
+                      </h2>
+                      <p className="text-xs text-slate-500">
+                        Search by owner, survey number, village, or record ID
+                      </p>
+                    </div>
+                    <div className="relative w-full sm:w-80">
+                      <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                      <Input
+                        value={query}
+                        onChange={(event) => setQuery(event.target.value)}
+                        placeholder="Search the registry…"
+                        className="h-10 rounded-xl border-slate-200 bg-slate-50 pl-9"
+                      />
+                    </div>
                   </div>
-                )}
-              </div>
-            </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[800px] text-left text-sm">
+                      <thead className="bg-slate-50/80 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        <tr>
+                          <th className="px-5 py-3">Record</th>
+                          <th className="px-5 py-3">Owner</th>
+                          <th className="px-5 py-3">Parcel</th>
+                          <th className="px-5 py-3">Area</th>
+                          <th className="px-5 py-3">Status</th>
+                          <th className="px-5 py-3">Updated</th>
+                          <th className="px-5 py-3">
+                            <span className="sr-only">Open</span>
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {filtered.map((record) => (
+                          // The View button provides the keyboard equivalent of row clicking.
+                          // oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
+                          <tr
+                            onClick={() => void openRecord(record)}
+                            key={record.id}
+                            className="group cursor-pointer transition-colors hover:bg-slate-50"
+                          >
+                            <td className="px-5 py-4 font-mono text-xs font-semibold text-slate-700">
+                              <button
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void openRecord(record);
+                                }}
+                                className="rounded text-left underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-teal-600"
+                              >
+                                {record.id}
+                              </button>
+                            </td>
+                            <td className="px-5 py-4 font-semibold">
+                              {record.owner}
+                            </td>
+                            <td className="px-5 py-4">
+                              <span className="font-medium">
+                                {record.survey}
+                              </span>
+                              <span className="block text-xs text-slate-500">
+                                {record.village}
+                              </span>
+                            </td>
+                            <td className="px-5 py-4 text-slate-600">
+                              {record.area} ac
+                            </td>
+                            <td className="px-5 py-4">
+                              <StatusBadge status={record.status} />
+                            </td>
+                            <td className="px-5 py-4 text-xs text-slate-500">
+                              {record.updated}
+                            </td>
+                            <td className="px-5 py-4">
+                              <button
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void openRecord(record);
+                                }}
+                                aria-label={`View record ${record.id}`}
+                                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-2 text-teal-800 hover:bg-teal-50"
+                              >
+                                View
+                                <ChevronRight className="h-4 w-4" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {filtered.length === 0 && (
+                      <div className="px-5 py-12 text-center text-sm text-slate-500">
+                        {query
+                          ? `No records match “${query}”.`
+                          : workspace === 'proofs'
+                            ? 'No proofs yet. Open a validated record to create a wallet signature or a Polygon anchor.'
+                            : workspace === 'review'
+                              ? 'No records are awaiting review.'
+                              : 'No records available.'}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         </section>
       </div>
 
-      {dialogOpen && (
+      {dialogOpen && canManage(profile) && (
         <dialog
           ref={modalRef}
           onCancel={(event) => {
@@ -1104,7 +1225,100 @@ export default function Home() {
             disabled={anchorBusy}
             className="min-w-0 border-0 px-5 py-5 md:px-6"
           >
-            <StepRail step={step} />
+            {step !== 'details' && <StepRail step={step} />}
+            {step === 'details' && selectedRecord && (
+              <div className="py-4">
+                <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-2xl font-bold">
+                      {selectedRecord.owner}
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-500">
+                      Record details · {selectedRecord.id}
+                    </p>
+                  </div>
+                  <StatusBadge status={selectedRecord.status} />
+                </div>
+                <dl className="grid gap-5 rounded-2xl border border-slate-200 bg-slate-50 p-5 sm:grid-cols-2 lg:grid-cols-3">
+                  {[
+                    ['Owner name', selectedRecord.owner],
+                    ['Survey / parcel', selectedRecord.survey],
+                    ['Village / locality', selectedRecord.village],
+                    ['Area', selectedRecord.area + ' acres'],
+                    ['Record number', selectedRecord.recordNo],
+                    ['Issue date', selectedRecord.issueDate],
+                    ['Last updated', selectedRecord.updated],
+                    [
+                      'Proof method',
+                      selectedRecord.proof === 'polygon'
+                        ? 'Polygon Amoy'
+                        : selectedRecord.proof === 'wallet'
+                          ? 'Wallet signature'
+                          : 'No proof recorded',
+                    ],
+                    ['Review state', selectedRecord.status],
+                  ].map(([label, value]) => (
+                    <div key={label}>
+                      <dt className="text-sm text-slate-500">{label}</dt>
+                      <dd className="mt-1 break-words text-base font-semibold">
+                        {value}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+                <div className="mt-5 rounded-2xl border border-slate-200 p-5">
+                  <h4 className="text-sm font-semibold text-slate-600">
+                    Record fingerprint
+                  </h4>
+                  <p className="mt-2 break-all font-mono text-sm">
+                    {hash || 'Computing fingerprint…'}
+                  </p>
+                  <p className="mt-2 text-sm text-slate-500">
+                    A fingerprint alone is not a confirmed blockchain proof.
+                  </p>
+                  {selectedRecord.txHash && (
+                    <>
+                      <h4 className="mt-4 text-sm font-semibold text-slate-600">
+                        Signature / transaction reference
+                      </h4>
+                      <p className="mt-2 break-all font-mono text-sm">
+                        {selectedRecord.txHash}
+                      </p>
+                    </>
+                  )}
+                  {selectedRecord.signer && (
+                    <p className="mt-3 break-all text-sm">
+                      Signing wallet: {selectedRecord.signer}
+                    </p>
+                  )}
+                </div>
+                <div className="mt-6 flex flex-wrap justify-end gap-3">
+                  <Button variant="outline" onClick={closeDialog}>
+                    Close
+                  </Button>
+                  <Button
+                    disabled={!hash}
+                    className="bg-teal-700 text-white hover:bg-teal-800"
+                    onClick={() =>
+                      setStep(
+                        selectedRecord.txHash
+                          ? 'proof'
+                          : selectedRecord.status === 'Needs review'
+                            ? 'review'
+                            : 'approved',
+                      )
+                    }
+                  >
+                    {selectedRecord.txHash
+                      ? 'Inspect & verify proof'
+                      : selectedRecord.status === 'Needs review'
+                        ? 'Review this record'
+                        : 'Create record proof'}
+                    <ChevronRight className="ml-2 h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            )}
             {step === 'upload' && (
               <UploadStage
                 onFile={(file) => void runOcr(file)}
@@ -1999,7 +2213,8 @@ function NavItem({
   return (
     <button
       onClick={onClick}
-      className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium transition ${active ? 'bg-teal-50 text-teal-800' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}
+      aria-current={active ? 'page' : undefined}
+      className={`flex w-auto shrink-0 items-center gap-3 whitespace-nowrap rounded-xl px-3 py-2.5 text-left text-sm font-medium transition lg:w-full ${active ? 'bg-teal-50 text-teal-800' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}
     >
       <Icon className="h-4 w-4" />
       <span>{label}</span>
@@ -2047,15 +2262,17 @@ function Metric({
   );
 }
 function stepLabel(step: Step) {
-  return step === 'upload'
-    ? 'Upload a clean, typed record or use the built-in sample.'
-    : step === 'processing'
-      ? 'Extracting text with browser-based OCR.'
-      : step === 'review'
-        ? 'Compare the source and confirm every field.'
-        : step === 'approved'
-          ? 'Validation passed. Sign the approved fingerprint without gas.'
-          : 'Recompute the fingerprint and recover the approving signer.';
+  return step === 'details'
+    ? 'Full record information and proof status.'
+    : step === 'upload'
+      ? 'Upload a clean, typed record or use the built-in sample.'
+      : step === 'processing'
+        ? 'Extracting text with browser-based OCR.'
+        : step === 'review'
+          ? 'Compare the source and confirm every field.'
+          : step === 'approved'
+            ? 'Validation passed. Sign the approved fingerprint without gas.'
+            : 'Recompute the fingerprint and recover the approving signer.';
 }
 
 function attestationMessage(recordId: string, fingerprint: string) {
