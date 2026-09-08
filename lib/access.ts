@@ -64,3 +64,29 @@ export function brokerLookup(
     }),
   );
 }
+
+export function searchLand(
+  records: Entry[],
+  locality: string,
+  surveyQuery: string,
+) {
+  const location = exact(locality);
+  const query = parcel(surveyQuery);
+  if (!location && query.length < 2) return [];
+  return records
+    .filter(
+      (record) =>
+        (!location || exact(record.village) === location) &&
+        (!query || parcel(record.survey).includes(query)),
+    )
+    .map(({ owner, survey, village, area, status }) => ({
+      owner,
+      survey,
+      village,
+      area,
+      status,
+      disputed:
+        matchingParcels(records, survey, village).length > 1 ||
+        status === 'Needs review',
+    }));
+}

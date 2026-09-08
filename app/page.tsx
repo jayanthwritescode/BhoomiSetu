@@ -87,6 +87,138 @@ const AMOY_EXPLORER = 'https://amoy.polygonscan.com';
 
 const seedRecords: LandRecord[] = [
   {
+    id: 'LR-2026-0180',
+    owner: 'Aarav Sharma',
+    survey: '215/3',
+    village: 'Jaipur',
+    area: '3.25',
+    issueDate: '2021-08-12',
+    recordNo: 'LR-0180-24',
+    status: 'Validated',
+    updated: 'Sample record',
+  },
+  {
+    id: 'LR-2026-0179',
+    owner: 'Kavya Iyer',
+    survey: '67/2A',
+    village: 'Coimbatore',
+    area: '1.50',
+    issueDate: '2023-03-21',
+    recordNo: 'LR-0179-24',
+    status: 'Validated',
+    updated: 'Sample record',
+  },
+  {
+    id: 'LR-2026-0178',
+    owner: 'Riya Patel',
+    survey: '304/8',
+    village: 'Vadodara',
+    area: '2.75',
+    issueDate: '2020-10-05',
+    recordNo: 'LR-0178-24',
+    status: 'Validated',
+    updated: 'Sample record',
+  },
+  {
+    id: 'LR-2026-0177',
+    owner: 'Arjun Mehta',
+    survey: '91/4',
+    village: 'Pune',
+    area: '0.85',
+    issueDate: '2024-02-16',
+    recordNo: 'LR-0177-24',
+    status: 'Validated',
+    updated: 'Sample record',
+  },
+  {
+    id: 'LR-2026-0176',
+    owner: 'Nisha Verma',
+    survey: '156/1B',
+    village: 'Lucknow',
+    area: '4.20',
+    issueDate: '2022-07-09',
+    recordNo: 'LR-0176-24',
+    status: 'Validated',
+    updated: 'Sample record',
+  },
+  {
+    id: 'LR-2026-0175',
+    owner: 'Dev Malhotra',
+    survey: '82/6',
+    village: 'Chandigarh',
+    area: '1.10',
+    issueDate: '2023-11-28',
+    recordNo: 'LR-0175-24',
+    status: 'Validated',
+    updated: 'Sample record',
+  },
+  {
+    id: 'LR-2026-0174',
+    owner: 'Sana Khan',
+    survey: '440/2',
+    village: 'Hyderabad',
+    area: '2.40',
+    issueDate: '2021-05-18',
+    recordNo: 'LR-0174-24',
+    status: 'Validated',
+    updated: 'Sample record',
+  },
+  {
+    id: 'LR-2026-0173',
+    owner: 'Ishaan Das',
+    survey: '129/5A',
+    village: 'Bhubaneswar',
+    area: '1.65',
+    issueDate: '2024-01-11',
+    recordNo: 'LR-0173-24',
+    status: 'Validated',
+    updated: 'Sample record',
+  },
+  {
+    id: 'LR-2026-0172',
+    owner: 'Priya Nair',
+    survey: '38/9',
+    village: 'Kochi',
+    area: '0.72',
+    issueDate: '2022-09-30',
+    recordNo: 'LR-0172-24',
+    status: 'Validated',
+    updated: 'Sample record',
+  },
+  {
+    id: 'LR-2026-0171',
+    owner: 'Kabir Sen',
+    survey: '206/7',
+    village: 'Kolkata',
+    area: '3.10',
+    issueDate: '2020-12-08',
+    recordNo: 'LR-0171-24',
+    status: 'Validated',
+    updated: 'Sample record',
+  },
+  {
+    id: 'LR-2026-0170',
+    owner: 'Maya Desai',
+    survey: '503/2',
+    village: 'Surat',
+    area: '2.00',
+    issueDate: '2023-06-24',
+    recordNo: 'LR-0170-24',
+    status: 'Validated',
+    updated: 'Sample record',
+  },
+  {
+    id: 'LR-2026-0169',
+    owner: 'Aditya Rao',
+    survey: '118/4',
+    village: 'Visakhapatnam',
+    area: '1.90',
+    issueDate: '2024-04-19',
+    recordNo: 'LR-0169-24',
+    status: 'Validated',
+    updated: 'Sample record',
+  },
+  {
     id: 'LR-2026-0184',
     owner: 'Ananya Rao',
     survey: '48/2B',
@@ -364,7 +496,7 @@ export default function Home() {
     setFieldConfidence(scoreFields(blankForm, 0));
     setProgress(100);
     setNotice(
-      'Synthetic sample: prefilled fields, not a live OCR result. The parcel conflict is intentional.',
+      'Synthetic sample: prefilled fields, not a live OCR result. The land parcel conflict is intentional.',
     );
     setStep('review');
   }, []);
@@ -978,7 +1110,9 @@ export default function Home() {
               <NavItem
                 icon={profile === 'broker' ? Search : ShieldCheck}
                 label={
-                  profile === 'broker' ? 'Parcel lookup' : 'Ownership check'
+                  profile === 'broker'
+                    ? 'Land parcel lookup'
+                    : 'Ownership check'
                 }
                 active={workspace !== 'help'}
                 onClick={() => navigate('registry')}
@@ -997,14 +1131,14 @@ export default function Home() {
               {profile === 'official'
                 ? 'Registry administration'
                 : profile === 'broker'
-                  ? 'Read-only parcel lookup'
+                  ? 'Read-only land parcel lookup'
                   : 'Exact-match verification'}
             </p>
             <p className="mt-2 text-sm leading-6 text-slate-500">
               {profile === 'official'
                 ? 'Review records and track signatures or blockchain confirmations in one place.'
                 : profile === 'broker'
-                  ? 'Find recorded owners by parcel. Editing and registry export are not available in this view.'
+                  ? 'Find recorded owners by land parcel. Editing and registry export are not available in this view.'
                   : 'Verify the details you already have without browsing other records.'}
             </p>
           </div>
@@ -1106,7 +1240,7 @@ export default function Home() {
                         <tr>
                           <th className="px-5 py-3">Record</th>
                           <th className="px-5 py-3">Owner</th>
-                          <th className="px-5 py-3">Parcel</th>
+                          <th className="px-5 py-3">Land parcel</th>
                           <th className="px-5 py-3">Area</th>
                           <th className="px-5 py-3">Status</th>
                           <th className="px-5 py-3">Updated</th>
@@ -1242,7 +1376,7 @@ export default function Home() {
                 <dl className="grid gap-5 rounded-2xl border border-slate-200 bg-slate-50 p-5 sm:grid-cols-2 lg:grid-cols-3">
                   {[
                     ['Owner name', selectedRecord.owner],
-                    ['Survey / parcel', selectedRecord.survey],
+                    ['Survey / land parcel', selectedRecord.survey],
                     ['Village / locality', selectedRecord.village],
                     ['Area', selectedRecord.area + ' acres'],
                     ['Record number', selectedRecord.recordNo],
@@ -1689,7 +1823,7 @@ function ReviewStage({
               <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" />
               <div>
                 <p className="text-sm font-semibold text-amber-900">
-                  Possible parcel conflict
+                  Possible land parcel conflict
                 </p>
                 <p className="mt-1 text-xs leading-5 text-amber-800">
                   Survey {form.survey} in {form.village} already appears under{' '}
@@ -1708,7 +1842,7 @@ function ReviewStage({
                 </p>
                 <p className="mt-1 text-xs text-teal-800">
                   Required fields, area, date, identifier format, and duplicate
-                  parcel checks completed.
+                  land parcel checks completed.
                 </p>
               </div>
             </div>
@@ -1783,7 +1917,7 @@ function ApprovedStage({
             <p className="mt-1 font-semibold">{form.owner}</p>
           </div>
           <div>
-            <span className="text-slate-400">Parcel</span>
+            <span className="text-slate-400">Land parcel</span>
             <p className="mt-1 font-semibold">{form.survey}</p>
           </div>
           <div>
