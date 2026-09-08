@@ -142,23 +142,41 @@ export default function Home() {
   }
 
   async function anchorOnPolygon() {
-    setAnchorBusy(true); setNotice('Waiting for wallet confirmation…');
+    setAnchorBusy(true); setChainStatus('idle'); setNotice('Opening MetaMask…');
     let submittedTransaction = '';
     try {
       if (!window.ethereum) throw new Error('NO_WALLET');
-      try { await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: AMOY_CHAIN_ID }] }); }
-      catch { await window.ethereum.request({ method: 'wallet_addEthereumChain', params: [{ chainId: AMOY_CHAIN_ID, chainName: 'Polygon Amoy', nativeCurrency: { name: 'POL', symbol: 'POL', decimals: 18 }, rpcUrls: [AMOY_RPC], blockExplorerUrls: [AMOY_EXPLORER] }] }); }
       const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' }) as string[];
-      const transaction = await window.ethereum.request({ method: 'eth_sendTransaction', params: [{ from: accounts[0], to: accounts[0], value: '0x0', data: `0x${hash}` }] }) as string;
+      const account = accounts[0];
+      if (!account) throw new Error('NO_ACCOUNT');
+      const currentChain = await window.ethereum.request({ method: 'eth_chainId' }) as string;
+      if (currentChain.toLowerCase() !== AMOY_CHAIN_ID) {
+        try { await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: AMOY_CHAIN_ID }] }); }
+        catch (switchError) {
+          if (walletErrorCode(switchError) !== 4902) throw switchError;
+          await window.ethereum.request({ method: 'wallet_addEthereumChain', params: [{ chainId: AMOY_CHAIN_ID, chainName: 'Polygon Amoy', nativeCurrency: { name: 'POL', symbol: 'POL', decimals: 18 }, rpcUrls: [AMOY_RPC], blockExplorerUrls: [AMOY_EXPLORER] }] });
+        }
+      }
+      const balance = await window.ethereum.request({ method: 'eth_getBalance', params: [account, 'latest'] }) as string;
+      if (BigInt(balance) === 0n) throw new Error('NO_GAS');
+      setNotice('Confirm the Polygon Amoy transaction in MetaMask…');
+      const transaction = await window.ethereum.request({ method: 'eth_sendTransaction', params: [{ from: account, to: account, value: '0x0', data: `0x${hash}` }] }) as string;
       submittedTransaction = transaction;
       setTxHash(transaction); setAnchoredHash(hash); setProof('polygon'); setChainStatus('pending'); setNotice('Transaction submitted. Waiting for an Amoy block confirmation…');
       const receipt = await waitForReceipt(transaction);
       if (receipt.status !== '0x1') throw new Error('TRANSACTION_REVERTED');
       setChainStatus('confirmed'); setStep('proof'); setRecords((old) => old.map((record) => record.id === currentId ? { ...record, status: 'Anchored', hash, txHash: transaction, proof: 'polygon' } : record)); setNotice(`Confirmed on Polygon Amoy in block ${Number.parseInt(receipt.blockNumber, 16).toLocaleString()}.`);
     } catch (error) {
-      if (error instanceof Error && error.message === 'NO_WALLET') setNotice('No browser wallet found. Install MetaMask or use the clearly labeled offline proof.');
+      const code = walletErrorCode(error);
+      const message = error instanceof Error ? error.message : '';
+      if (message === 'NO_WALLET') setNotice('MetaMask is not available in this browser. Open BhoomiSetu in the browser profile where the MetaMask extension is installed.');
+      else if (message === 'NO_ACCOUNT') setNotice('MetaMask did not provide an account. Unlock it and connect this site.');
+      else if (message === 'NO_GAS' || /insufficient funds/i.test(message)) setNotice('MetaMask connected, but this account has 0 POL on Polygon Amoy. An on-chain anchor cannot be submitted without gas; use gasless attestation or fund the account.');
+      else if (code === 4001) setNotice('The MetaMask request was rejected. Click “Anchor on Polygon Amoy” when you are ready to approve it.');
+      else if (code === -32002) setNotice('A MetaMask request is already waiting. Open MetaMask and approve or reject the pending request, then retry.');
       else if (submittedTransaction && (!(error instanceof Error) || error.message !== 'TRANSACTION_REVERTED')) { setChainStatus('pending'); setStep('proof'); setNotice('Transaction was submitted, but confirmation could not be established yet. Check the explorer before treating it as anchored.'); }
-      else { setChainStatus('failed'); setNotice('The wallet transaction was rejected or failed. The record remains validated and no anchor was recorded.'); }
+      else setNotice('MetaMask could not prepare the Polygon Amoy transaction. Unlock the wallet, confirm this site is connected, and retry.');
+      if (!submittedTransaction) setChainStatus('failed');
     } finally { setAnchorBusy(false); }
   }
 
@@ -306,6 +324,11 @@ function utf8ToHex(value: string) {
 
 function shortAddress(address: string) {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+
+function walletErrorCode(error: unknown) {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return undefined;
+  return typeof error.code === 'number' ? error.code : Number(error.code);
 }
 
 type AmoyReceipt = { status: string; blockNumber: string };
